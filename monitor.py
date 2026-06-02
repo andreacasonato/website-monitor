@@ -1,10 +1,14 @@
 """Website Change Monitor: check URLs for changes and notify via email."""
 
 import argparse
-import hashlib       # NEW
+import hashlib
 import json
 from pathlib import Path
-import requests      # NEW
+import requests
+
+
+# Path to the state file
+STATE_FILE = Path(__file__).parent / "state.json"
 
 
 def load_urls() -> list:
@@ -20,36 +24,61 @@ def load_urls() -> list:
     return urls
 
 
-# Fetch a URL and return a hash of its content
+# Load the previous state from state.json
+def load_state() -> dict:
+    if not STATE_FILE.exists():
+        return {}   # empty dict means no previous state recorded yet
+    with open(STATE_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
 def fetch_hash(url: str) -> str | None:
     try:
-        # timeout=10 means give up after 10 seconds if no response
         response = requests.get(url, timeout=10)
-
-        # raises an error if the server returned
-        # a failure code like 404 (not found) or 500 (server error)
         response.raise_for_status()
-
-        # Encode the content to bytes, then hash it with md5
-        # hexdigest() returns the hash as a readable string like "a3f5b2c1..."
         content = response.text.encode("utf-8")
         return hashlib.md5(content).hexdigest()
-
     except requests.exceptions.RequestException as e:
         print(f"  [ERROR] Could not fetch {url}: {e}")
         return None
 
 
-# Check all URLs and print their current hash
-def check_urls(urls: list) -> None:
+# Check all URLs, compare against stored state, report changes
+def check_urls(urls: list, state: dict) -> list:
     print("\nChecking URLs...")
+
+    # Collect changed URLs here to return for notification later
+    changes = []
+
     for entry in urls:
         name = entry["name"]
         url = entry["url"]
         print(f"  Checking: {name}")
-        hash_value = fetch_hash(url)
-        if hash_value:
-            print(f"  Hash: {hash_value}")
+
+        new_hash = fetch_hash(url)
+        if new_hash is None:
+            continue   # skip if fetch failed
+
+        # Look up the previous hash for this URL
+        # .get() returns None if this URL has never been checked before
+        old_hash = state.get(url)
+
+        if old_hash is None:
+            # First time we've seen this URL, store it, no alert needed
+            print(f"  [NEW]     First check recorded.")
+            state[url] = new_hash
+
+        elif old_hash != new_hash:
+            # Hash changed: page content is different from last check
+            print(f"  [CHANGED] Change detected on {name}!")
+            state[url] = new_hash
+            changes.append(entry)
+
+        else:
+            # Hash is identical, no change
+            print(f"  [OK]      No change.")
+
+    return changes
 
 
 def main():
@@ -67,8 +96,16 @@ def main():
     if not urls:
         return
 
-    # Run an immediate check
-    check_urls(urls)
+    # Load previous state and check for changes
+    state = load_state()
+    changes = check_urls(urls, state)
+
+    if changes:
+        print(f"\n{len(changes)} change(s) detected:")
+        for entry in changes:
+            print(f"  - {entry['name']}: {entry['url']}")
+    else:
+        print("\nNo changes detected.")
 
 
 if __name__ == "__main__":
