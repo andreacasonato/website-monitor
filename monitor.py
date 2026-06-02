@@ -3,9 +3,17 @@
 import argparse
 import hashlib
 import json
+import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 import requests
+from dotenv import load_dotenv
 
+
+# Load credentials from .env file into environment variables
+load_dotenv()
 
 STATE_FILE = Path(__file__).parent / "state.json"
 
@@ -30,12 +38,9 @@ def load_state() -> dict:
         return json.load(f)
 
 
-# Write the updated state back to state.json
 def save_state(state: dict) -> None:
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        # indent=2 makes the file readable — one key per line, indented
         json.dump(state, f, indent=2)
-    print(f"  State saved.")
 
 
 def fetch_hash(url: str) -> str | None:
@@ -52,18 +57,14 @@ def fetch_hash(url: str) -> str | None:
 def check_urls(urls: list, state: dict) -> list:
     print("\nChecking URLs...")
     changes = []
-
     for entry in urls:
         name = entry["name"]
         url = entry["url"]
         print(f"  Checking: {name}")
-
         new_hash = fetch_hash(url)
         if new_hash is None:
             continue
-
         old_hash = state.get(url)
-
         if old_hash is None:
             print(f"  [NEW]     First check recorded.")
             state[url] = new_hash
@@ -73,8 +74,42 @@ def check_urls(urls: list, state: dict) -> list:
             changes.append(entry)
         else:
             print(f"  [OK]      No change.")
-
     return changes
+
+
+# Send an email listing all changed URLs
+def send_email(changes: list) -> None:
+    # Read credentials from environment variables
+    sender = os.getenv("SENDER_EMAIL")
+    password = os.getenv("SENDER_PASSWORD")
+    receiver = os.getenv("RECEIVER_EMAIL")
+
+    # Guard: make sure all credentials are present
+    if not all([sender, password, receiver]):
+        print("  [ERROR] Missing email credentials in .env file.")
+        return
+
+    # Build the email body listing every changed URL
+    body = "The following websites have changed:\n\n"
+    for entry in changes:
+        body += f"  - {entry['name']}: {entry['url']}\n"
+
+    # MIMEMultipart lets us build a proper email with headers
+    msg = MIMEMultipart()
+    msg["From"] = sender
+    msg["To"] = receiver
+    msg["Subject"] = f"Website Monitor: {len(changes)} change(s) detected"
+    msg.attach(MIMEText(body, "plain"))
+
+    try:
+        # Connect to Gmail's SMTP server on port 587 (TLS)
+        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+            server.starttls()                        # encrypt the connection
+            server.login(sender, password)           # authenticate
+            server.sendmail(sender, receiver, msg.as_string())
+        print(f"  [EMAIL] Notification sent to {receiver}")
+    except Exception as e:
+        print(f"  [ERROR] Failed to send email: {e}")
 
 
 def main():
@@ -94,14 +129,12 @@ def main():
 
     state = load_state()
     changes = check_urls(urls, state)
-
-    # Save state after every check
     save_state(state)
 
+    # Send email if any changes were detected
     if changes:
-        print(f"\n{len(changes)} change(s) detected:")
-        for entry in changes:
-            print(f"  - {entry['name']}: {entry['url']}")
+        print(f"\n{len(changes)} change(s) detected.")
+        send_email(changes)
     else:
         print("\nNo changes detected.")
 
