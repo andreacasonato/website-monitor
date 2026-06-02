@@ -7,7 +7,6 @@ from pathlib import Path
 import requests
 
 
-# Path to the state file
 STATE_FILE = Path(__file__).parent / "state.json"
 
 
@@ -24,12 +23,19 @@ def load_urls() -> list:
     return urls
 
 
-# Load the previous state from state.json
 def load_state() -> dict:
     if not STATE_FILE.exists():
-        return {}   # empty dict means no previous state recorded yet
+        return {}
     with open(STATE_FILE, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+# Write the updated state back to state.json
+def save_state(state: dict) -> None:
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        # indent=2 makes the file readable — one key per line, indented
+        json.dump(state, f, indent=2)
+    print(f"  State saved.")
 
 
 def fetch_hash(url: str) -> str | None:
@@ -43,11 +49,8 @@ def fetch_hash(url: str) -> str | None:
         return None
 
 
-# Check all URLs, compare against stored state, report changes
 def check_urls(urls: list, state: dict) -> list:
     print("\nChecking URLs...")
-
-    # Collect changed URLs here to return for notification later
     changes = []
 
     for entry in urls:
@@ -57,25 +60,18 @@ def check_urls(urls: list, state: dict) -> list:
 
         new_hash = fetch_hash(url)
         if new_hash is None:
-            continue   # skip if fetch failed
+            continue
 
-        # Look up the previous hash for this URL
-        # .get() returns None if this URL has never been checked before
         old_hash = state.get(url)
 
         if old_hash is None:
-            # First time we've seen this URL, store it, no alert needed
             print(f"  [NEW]     First check recorded.")
             state[url] = new_hash
-
         elif old_hash != new_hash:
-            # Hash changed: page content is different from last check
             print(f"  [CHANGED] Change detected on {name}!")
             state[url] = new_hash
             changes.append(entry)
-
         else:
-            # Hash is identical, no change
             print(f"  [OK]      No change.")
 
     return changes
@@ -96,9 +92,11 @@ def main():
     if not urls:
         return
 
-    # Load previous state and check for changes
     state = load_state()
     changes = check_urls(urls, state)
+
+    # Save state after every check
+    save_state(state)
 
     if changes:
         print(f"\n{len(changes)} change(s) detected:")
