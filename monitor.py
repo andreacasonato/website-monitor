@@ -5,14 +5,15 @@ import hashlib
 import json
 import os
 import smtplib
+import time
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from pathlib import Path
 import requests
+import schedule
 from dotenv import load_dotenv
 
 
-# Load credentials from .env file into environment variables
 load_dotenv()
 
 STATE_FILE = Path(__file__).parent / "state.json"
@@ -77,39 +78,44 @@ def check_urls(urls: list, state: dict) -> list:
     return changes
 
 
-# Send an email listing all changed URLs
 def send_email(changes: list) -> None:
-    # Read credentials from environment variables
     sender = os.getenv("SENDER_EMAIL")
     password = os.getenv("SENDER_PASSWORD")
     receiver = os.getenv("RECEIVER_EMAIL")
-
-    # Guard: make sure all credentials are present
     if not all([sender, password, receiver]):
         print("  [ERROR] Missing email credentials in .env file.")
         return
-
-    # Build the email body listing every changed URL
     body = "The following websites have changed:\n\n"
     for entry in changes:
         body += f"  - {entry['name']}: {entry['url']}\n"
-
-    # MIMEMultipart lets us build a proper email with headers
     msg = MIMEMultipart()
     msg["From"] = sender
     msg["To"] = receiver
     msg["Subject"] = f"Website Monitor: {len(changes)} change(s) detected"
     msg.attach(MIMEText(body, "plain"))
-
     try:
-        # Connect to Gmail's SMTP server on port 587 (TLS)
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()                        # encrypt the connection
-            server.login(sender, password)           # authenticate
+            server.starttls()
+            server.login(sender, password)
             server.sendmail(sender, receiver, msg.as_string())
         print(f"  [EMAIL] Notification sent to {receiver}")
     except Exception as e:
         print(f"  [ERROR] Failed to send email: {e}")
+
+
+# This is the function schedule will call on every interval
+def run_check() -> None:
+    urls = load_urls()
+    if not urls:
+        return
+    state = load_state()
+    changes = check_urls(urls, state)
+    save_state(state)
+    if changes:
+        print(f"\n{len(changes)} change(s) detected.")
+        send_email(changes)
+    else:
+        print("\nNo changes detected.")
 
 
 def main():
@@ -123,20 +129,24 @@ def main():
 
     args = parser.parse_args()
 
-    urls = load_urls()
-    if not urls:
-        return
+    # Run an immediate check if --check-now was passed
+    if args.check_now:
+        print("Running immediate check...")
+        run_check()
 
-    state = load_state()
-    changes = check_urls(urls, state)
-    save_state(state)
+    # Schedule run_check() to run every X minutes
+    schedule.every(args.interval).minutes.do(run_check)
+    print(f"\nMonitor running. Checking every {args.interval} minute(s).")
+    print("Press Ctrl+C to stop.\n")
 
-    # Send email if any changes were detected
-    if changes:
-        print(f"\n{len(changes)} change(s) detected.")
-        send_email(changes)
-    else:
-        print("\nNo changes detected.")
+    # Keep the script alive, checking every second if a job is due
+    # time.sleep(1) prevents the loop from consuming 100% CPU
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nMonitor stopped.")
 
 
 if __name__ == "__main__":
